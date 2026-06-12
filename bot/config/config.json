@@ -1,0 +1,31 @@
+{
+  "triangle": {
+    "name": "XRP-BTC-USDT",
+    "base_asset": "USDT",
+    "pairs": ["XRPUSDT", "XRPBTC", "BTCUSDT"]
+  },
+  "feed": {
+    "ws_base_url": "wss://stream.binance.com:9443",
+    "depth_level": 5,
+    "reconnect_delay_ms": 1000,
+    "max_reconnect_delay_ms": 30000,
+    "heartbeat_timeout_ms": 60000
+  },
+  "fees": {
+    "taker_fee_pct": 0.075,
+    "bnb_discount": true
+  },
+  "risk": {
+    "min_profit_ratio": 1.003,
+    "min_depth_multiplier": 3.0,
+    "trade_size_usdt": 50.0,
+    "max_daily_loss_usdt": 25.0,
+    "trade_cooldown_ms": 2000
+  },
+  "logging": {
+    "log_dir": "logs",
+    "signals_db": "data/signals.db",
+    "trades_db": "data/trades.db"
+  },
+  "mode": "paper"
+}
