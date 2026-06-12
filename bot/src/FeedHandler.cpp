@@ -9,12 +9,14 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <set>
 
 FeedHandler::FeedHandler(asio::io_context& ioc, ssl::context& ssl_ctx,
-                         const BotConfig& config)
+                         const BotConfig& config, std::vector<std::string> stream_symbols)
     : ioc_(ioc)
     , ssl_ctx_(ssl_ctx)
     , config_(config)
+    , stream_symbols_(std::move(stream_symbols))
     , resolver_(asio::make_strand(ioc))
     , ws_(asio::make_strand(ioc), ssl_ctx)
 {}
@@ -25,15 +27,24 @@ void FeedHandler::on_connected(ConnectedCallback cb){ connected_cb_ = std::move(
 void FeedHandler::start() { do_resolve(); }
 
 // Binance wants lowercase symbols: BTCUSDT -> btcusdt.
-// Combined stream form: /stream?streams=<s1>@depth5/<s2>@depth5/<s3>@depth5
+// Combined stream form: /stream?streams=<s1>@depth5/<s2>@depth5/...
+// We dedupe here (via a sorted set) so the shared bridge leg is subscribed once
+// even if every triangle lists it. Subscribing the same stream twice isn't fatal
+// on Binance, but it wastes the connection's stream budget and muddies logs.
 std::string FeedHandler::build_stream_path() const {
-    std::string path = "/stream?streams=";
     const int depth = config_.feed.depth_level;
-    bool first = true;
-    for (const auto& pair : config_.triangle.pairs) {
-        std::string sym = pair.symbol;
-        std::transform(sym.begin(), sym.end(), sym.begin(),
+
+    std::set<std::string> unique;  // sorted + deduped
+    for (const auto& sym : stream_symbols_) {
+        std::string lower = sym;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c){ return std::tolower(c); });
+        unique.insert(lower);
+    }
+
+    std::string path = "/stream?streams=";
+    bool first = true;
+    for (const auto& sym : unique) {
         if (!first) path += "/";
         path += sym + "@depth" + std::to_string(depth);
         first = false;

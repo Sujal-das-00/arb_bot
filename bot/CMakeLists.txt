@@ -22,6 +22,8 @@ add_library(arb_core STATIC
     src/FeedHandler.cpp
     src/MessageParser.cpp
     src/TriangleCalculator.cpp
+    src/Dispatch.cpp
+    src/Logger.cpp
 )
 target_include_directories(arb_core PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(arb_core PUBLIC
@@ -47,4 +49,7 @@ if(BUILD_TESTING)
     add_executable(test_triangle_calculator tests/test_triangle_calculator.cpp)
     target_link_libraries(test_triangle_calculator PRIVATE arb_core GTest::gtest_main)
     add_test(NAME test_triangle_calculator COMMAND test_triangle_calculator)
+    add_executable(test_dispatch tests/test_dispatch.cpp)
+    target_link_libraries(test_dispatch PRIVATE arb_core GTest::gtest_main)
+    add_test(NAME test_dispatch COMMAND test_dispatch)
 endif()

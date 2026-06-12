@@ -1,9 +1,70 @@
 {
-  "triangle": {
-    "name": "XRP-BTC-USDT",
-    "base_asset": "USDT",
-    "pairs": ["XRPUSDT", "XRPBTC", "BTCUSDT"]
+  "currency_modifiers": {
+    "comment": "Optional global replacements. E.g. { \"ETH\": \"SOL\" } swaps ETH for SOL everywhere.",
+    "example": "Uncomment the line below to replace ETH with SOL in every loop"
   },
+  "triangles": [
+    {
+      "name": "AVAX-BTC-USDT",
+      "outer_usdt": "AVAXUSDT",
+      "outer_btc":  "AVAXBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "SOL-BTC-USDT",
+      "outer_usdt": "SOLUSDT",
+      "outer_btc":  "SOLBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "LINK-BTC-USDT",
+      "outer_usdt": "LINKUSDT",
+      "outer_btc":  "LINKBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "DOT-BTC-USDT",
+      "outer_usdt": "DOTUSDT",
+      "outer_btc":  "DOTBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "ATOM-BTC-USDT",
+      "outer_usdt": "ATOMUSDT",
+      "outer_btc":  "ATOMBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "INJ-BTC-USDT",
+      "outer_usdt": "INJUSDT",
+      "outer_btc":  "INJBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "NEAR-BTC-USDT",
+      "outer_usdt": "NEARUSDT",
+      "outer_btc":  "NEARBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "ADA-BTC-USDT",
+      "outer_usdt": "ADAUSDT",
+      "outer_btc":  "ADABTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "XRP-BTC-USDT",
+      "outer_usdt": "XRPUSDT",
+      "outer_btc":  "XRPBTC",
+      "btc_usdt":   "BTCUSDT"
+    },
+    {
+      "name": "DOGE-BTC-USDT",
+      "outer_usdt": "DOGEUSDT",
+      "outer_btc":  "DOGEBTC",
+      "btc_usdt":   "BTCUSDT"
+    }
+  ],
   "feed": {
     "ws_base_url": "wss://stream.binance.com:9443",
     "depth_level": 5,

@@ -1,15 +1,18 @@
 #include "Config.h"
+#include "TriangleDef.h"
 
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
-#include <map>
-#include <set>
 
 using json = nlohmann::json;
+
+// Global currency modifier list (defined here, declared in TriangleDef.h).
+std::vector<std::pair<std::string, std::string>> g_currency_modifiers;
 
 namespace {
 
@@ -65,27 +68,13 @@ void parse_ws_url(const std::string& url,
     }
 }
 
-// Given a symbol like "ETHBTC" and the set of assets in the triangle
-// ({"USDT","BTC","ETH"}), find which asset is the base (prefix) and which is
-// the quote (suffix). Binance symbols are BASE+QUOTE concatenated with no
-// separator, so we test each asset as a possible suffix.
-void derive_base_quote(const std::string& symbol,
-                       const std::set<std::string>& assets,
-                       std::string& base, std::string& quote) {
-    for (const auto& a : assets) {
-        if (symbol.size() > a.size() &&
-            symbol.compare(symbol.size() - a.size(), a.size(), a) == 0) {
-            std::string candidate_base = symbol.substr(0, symbol.size() - a.size());
-            if (assets.count(candidate_base)) {
-                base = candidate_base;
-                quote = a;
-                return;
-            }
-        }
-    }
-    throw std::runtime_error(
-        "Config: cannot split symbol '" + symbol +
-        "' into two of the triangle's assets — check the pairs form a real loop");
+// Normalize a Binance symbol to the uppercase form the rest of the bot keys on
+// ("avaxbtc" -> "AVAXBTC"). MessageParser uppercases symbols too, so the book
+// map and the reverse index must agree on case.
+std::string to_upper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return std::toupper(c); });
+    return s;
 }
 
 } // namespace
@@ -105,85 +94,83 @@ BotConfig BotConfig::load(const std::string& path) {
 
     BotConfig cfg;
 
-    // ---- triangle ----
-    const auto& tri = j.at("triangle");
-    cfg.triangle.name       = tri.value("name", std::string{});
-    cfg.triangle.base_asset = tri.at("base_asset").get<std::string>();
-
-    std::vector<std::string> symbols =
-        tri.at("pairs").get<std::vector<std::string>>();
-    if (symbols.size() != 3) {
-        throw std::runtime_error(
-            "Config: triangle must have exactly 3 pairs, found " +
-            std::to_string(symbols.size()));
-    }
-
-    // Collect the distinct assets by trying every known major quote against
-    // the symbols. We seed with base_asset and discover the rest by splitting.
-    // First pass: gather all candidate assets from a known set + base_asset.
-    // To keep this robust without hardcoding, we infer assets iteratively.
-    //
-    // Simple, reliable approach: the union of all characters can't tell us
-    // boundaries, so we use the fact that across 3 pairs each asset appears
-    // exactly twice. We brute-force consistent splits using base_asset as anchor.
-    //
-    // Practical method: assume each symbol ends in one of the assets we know.
-    // We know base_asset for sure. The other two assets are the leftover parts.
-    // We solve by trying common quote currencies present in the symbols.
-    std::set<std::string> assets;
-    assets.insert(cfg.triangle.base_asset);
-
-    // Discover the two non-anchor assets. For each symbol, peel off base_asset
-    // if it appears as a prefix or suffix; the remainder is another asset.
-    for (const auto& sym : symbols) {
-        const std::string& a = cfg.triangle.base_asset;
-        if (sym.size() > a.size() &&
-            sym.compare(0, a.size(), a) == 0) {
-            assets.insert(sym.substr(a.size()));            // anchor is prefix
-        } else if (sym.size() > a.size() &&
-                   sym.compare(sym.size() - a.size(), a.size(), a) == 0) {
-            assets.insert(sym.substr(0, sym.size() - a.size())); // anchor is suffix
+    // ---- currency_modifiers (optional) ----
+    // Global replacements: if present, { "ETH": "SOL" } means "swap every ETH for SOL"
+    // in every loop. Useful for spinning up N variants without duplicating JSON.
+    // Format: object of { "OLD": "NEW", ... } or a list of [["OLD", "NEW"], ...].
+    if (j.contains("currency_modifiers")) {
+        const auto& mods = j.at("currency_modifiers");
+        if (mods.is_object()) {
+            for (auto it = mods.begin(); it != mods.end(); ++it) {
+                cfg.currency_modifiers.push_back({to_upper(it.key()), to_upper(it.value())});
+            }
+        } else if (mods.is_array()) {
+            for (const auto& pair : mods) {
+                if (pair.is_array() && pair.size() == 2) {
+                    cfg.currency_modifiers.push_back({
+                        to_upper(pair[0].get<std::string>()),
+                        to_upper(pair[1].get<std::string>())
+                    });
+                }
+            }
         }
     }
 
-    // The bridge pair (neither side is the anchor) introduces the relationship
-    // between the two non-anchor assets; both should already be in `assets`
-    // from the two anchored pairs. If we don't have exactly 3 assets, the
-    // triangle is misconfigured.
-    if (assets.size() != 3) {
-        throw std::runtime_error(
-            "Config: could not identify exactly 3 assets from pairs + base_asset '" +
-            cfg.triangle.base_asset + "'. Found " + std::to_string(assets.size()) +
-            ". Check that two pairs include the anchor and the symbols are correct.");
-    }
+    // Helper to apply all modifiers to a symbol: each (old, new) pair is a
+    // substring replacement, e.g. {"AVAX","SOL"} turns "AVAXUSDT" into
+    // "SOLUSDT". Applied in order; not transitive.
+    auto apply_modifiers = [&](std::string sym) {
+        for (const auto& [old, newv] : cfg.currency_modifiers) {
+            if (old.empty()) continue;
+            std::size_t pos = 0;
+            while ((pos = sym.find(old, pos)) != std::string::npos) {
+                sym.replace(pos, old.size(), newv);
+                pos += newv.size();
+            }
+        }
+        return sym;
+    };
 
-    // Now split every symbol into base/quote against the discovered assets.
-    std::map<std::string,int> appearances;
-    for (const auto& sym : symbols) {
-        PairConfig pc;
-        pc.symbol = sym;
-        derive_base_quote(sym, assets, pc.base, pc.quote);
-        appearances[pc.base]++;
-        appearances[pc.quote]++;
-        cfg.triangle.pairs.push_back(pc);
-    }
-
-    // Validate closed loop: 3 assets, each appearing exactly twice.
-    if (appearances.size() != 3) {
-        throw std::runtime_error(
-            "Config: triangle does not involve exactly 3 assets after splitting.");
-    }
-    for (const auto& [asset, count] : appearances) {
-        if (count != 2) {
+    // Parse one leg: uppercase, apply modifiers, and reject if empty.
+    auto parse_leg = [&](const json& t, const char* field, const std::string& tri_name) {
+        if (!t.contains(field) || !t.at(field).is_string() || t.at(field).get<std::string>().empty()) {
             throw std::runtime_error(
-                "Config: asset '" + asset + "' appears " + std::to_string(count) +
-                " time(s), expected 2 — triangle does not close cleanly.");
+                "Config: triangle '" + (tri_name.empty() ? std::string("<unnamed>") : tri_name) +
+                "' must have a non-empty \"" + field + "\" field");
         }
-    }
-    if (!appearances.count(cfg.triangle.base_asset)) {
+        std::string sym = apply_modifiers(to_upper(t.at(field).get<std::string>()));
+        if (sym.empty()) {
+            throw std::runtime_error(
+                "Config: triangle '" + tri_name + "' has an empty \"" + field +
+                "\" after modifiers");
+        }
+        return sym;
+    };
+
+    // ---- triangles ----
+    // Each entry names its three legs by role: outer_usdt, outer_btc, btc_usdt.
+    // All are uppercase-normalized and then currency modifiers are applied.
+    if (!j.contains("triangles") || !j.at("triangles").is_array() ||
+        j.at("triangles").empty()) {
         throw std::runtime_error(
-            "Config: base_asset '" + cfg.triangle.base_asset +
-            "' is not part of the triangle.");
+            "Config: \"triangles\" must be a non-empty array of "
+            "{name, outer_usdt, outer_btc, btc_usdt} objects");
+    }
+
+    for (const auto& t : j.at("triangles")) {
+        TriangleDef d;
+        d.name = t.value("name", std::string{});
+
+        d.outer_usdt = parse_leg(t, "outer_usdt", d.name);
+        d.outer_btc  = parse_leg(t, "outer_btc",  d.name);
+        d.btc_usdt   = parse_leg(t, "btc_usdt",   d.name);
+
+        if (d.name.empty()) {
+            // Best-effort label: outer leg and bridge.
+            d.name = d.outer_usdt + "-" + d.btc_usdt;
+        }
+
+        cfg.triangles.push_back(std::move(d));
     }
 
     // ---- feed ----

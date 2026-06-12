@@ -12,6 +12,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace beast     = boost::beast;
 namespace websocket = beast::websocket;
@@ -29,7 +30,11 @@ public:
     using MessageCallback = std::function<void(const std::string&)>;
     using ConnectedCallback = std::function<void()>;
 
-    FeedHandler(asio::io_context& ioc, ssl::context& ssl_ctx, const BotConfig& config);
+    // `stream_symbols` is the full set of symbols to subscribe to (e.g. the 21
+    // unique legs across all triangles). Duplicates are tolerated — the handler
+    // dedupes when building the combined-stream URL.
+    FeedHandler(asio::io_context& ioc, ssl::context& ssl_ctx,
+                const BotConfig& config, std::vector<std::string> stream_symbols);
 
     void on_message(MessageCallback cb);
     void on_connected(ConnectedCallback cb);  // fired once streaming begins
@@ -51,6 +56,7 @@ private:
     asio::io_context& ioc_;
     ssl::context&     ssl_ctx_;
     BotConfig         config_;
+    std::vector<std::string> stream_symbols_;  // symbols to subscribe to
 
     tcp::resolver resolver_;
     websocket::stream<ssl::stream<beast::tcp_stream>> ws_;

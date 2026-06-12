@@ -1,30 +1,18 @@
 #pragma once
 
+#include "TriangleDef.h"
+
 #include <string>
 #include <vector>
 #include <cstdint>
 
 // ---------------------------------------------------------------------------
 // Config mirrors the structure of YOUR config.json exactly, section by section.
-// The triangle pairs are simple strings ("BTCUSDT"); we derive base/quote from
-// each symbol at load time so the rest of the bot still knows how to walk the
-// loop. Anything here can be overridden by an environment variable (see .cpp).
+// The bot now watches a list of triangles (config key "triangles"); each entry
+// names its three legs by role (outer_usdt, outer_btc, btc_usdt) so no base/quote
+// derivation is needed. Anything here can be overridden by an environment
+// variable (see .cpp).
 // ---------------------------------------------------------------------------
-
-// One pair, with base/quote derived from the symbol against the known assets
-// in the triangle. e.g. symbol "ETHBTC" with assets {USDT,BTC,ETH} -> base ETH,
-// quote BTC.
-struct PairConfig {
-    std::string symbol;   // "BTCUSDT"
-    std::string base;     // "BTC"  (derived)
-    std::string quote;    // "USDT" (derived)
-};
-
-struct TriangleConfig {
-    std::string name;                 // "BTC-ETH-USDT"
-    std::string base_asset;           // "USDT"  (the anchor you start/end on)
-    std::vector<PairConfig> pairs;    // exactly 3, in loop order
-};
 
 struct FeedConfig {
     std::string ws_base_url;          // "wss://stream.binance.com:9443"
@@ -59,15 +47,15 @@ struct LoggingConfig {
 };
 
 struct BotConfig {
-    TriangleConfig triangle;
+    std::vector<TriangleDef> triangles; // one or more arbitrage loops
+    std::vector<std::pair<std::string, std::string>> currency_modifiers;  // global replacements
     FeedConfig     feed;
     FeesConfig     fees;
     RiskConfig     risk;
     LoggingConfig  logging;
     std::string    mode = "paper";    // "paper" or "live"
 
-    // Loads config.json from `path`, derives host/port and base/quote,
-    // validates the triangle closes, then applies env-var overrides.
-    // Throws std::runtime_error on any problem, with a clear message.
+    // Loads config.json from `path`, applies currency modifiers to every loop,
+    // then applies env-var overrides. Throws std::runtime_error on any problem.
     static BotConfig load(const std::string& path);
 };
