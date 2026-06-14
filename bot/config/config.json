@@ -73,20 +73,31 @@
     "heartbeat_timeout_ms": 60000
   },
   "fees": {
-    "taker_fee_pct": 0.075,
-    "bnb_discount": true
+    "taker_fee_pct": 0.1,
+    "bnb_discount": false
   },
   "risk": {
-    "min_profit_ratio": 1.003,
+    "ghost_threshold_pct": 1.0,
+    "min_net_pct": 0.02,
+    "max_daily_loss_usdt": 100.0,
+    "trade_size_usdt": 1000.0,
     "min_depth_multiplier": 3.0,
-    "trade_size_usdt": 50.0,
-    "max_daily_loss_usdt": 25.0,
-    "trade_cooldown_ms": 2000
+    "min_profit_threshold": 0.0035
   },
   "logging": {
     "log_dir": "logs",
     "signals_db": "data/signals.db",
     "trades_db": "data/trades.db"
+  },
+  "execution": {
+    "rest_base_url": "https://testnet.binance.vision",
+    "api_key": "wAQnQNFejxopLbfDKAPFervXaLtedY56xYfpKqPRa9uO1TsNhRfwqxCZoH0FQvHq",
+    "api_secret": "4HYicXCGWMuOfBNtR91NHqWKYcNoZdyLXmo7aXShu0A6DP0fUNpapDwBwglh3zaG",
+    "order_timeout_ms": 500,
+    "recheck_threshold": 1.001,
+    "leg3_threshold": 1.000,
+    "enabled": false,
+    "trades_csv": "data/trades.csv"
   },
   "mode": "paper"
 }

@@ -192,10 +192,13 @@ BotConfig BotConfig::load(const std::string& path) {
     // ---- risk ----
     if (j.contains("risk")) {
         const auto& risk = j.at("risk");
-        cfg.risk.min_profit_ratio     = risk.value("min_profit_ratio", 1.003);
+        cfg.risk.ghost_threshold_pct  = risk.value("ghost_threshold_pct", 1.0);
+        cfg.risk.min_net_pct          = risk.value("min_net_pct", 0.02);
         cfg.risk.min_depth_multiplier = risk.value("min_depth_multiplier", 3.0);
-        cfg.risk.trade_size_usdt      = risk.value("trade_size_usdt", 50.0);
-        cfg.risk.max_daily_loss_usdt  = risk.value("max_daily_loss_usdt", 25.0);
+        cfg.risk.trade_size_usdt      = risk.value("trade_size_usdt", 100.0);
+        cfg.risk.max_daily_loss_usdt  = risk.value("max_daily_loss_usdt", 50.0);
+        cfg.risk.min_profit_threshold = risk.value("min_profit_threshold", 0.0035);
+        cfg.risk.min_profit_ratio     = risk.value("min_profit_ratio", 1.003);
         cfg.risk.trade_cooldown_ms    = risk.value("trade_cooldown_ms", 2000u);
     }
 
@@ -205,6 +208,19 @@ BotConfig BotConfig::load(const std::string& path) {
         cfg.logging.log_dir    = lg.value("log_dir", std::string("logs"));
         cfg.logging.signals_db = lg.value("signals_db", std::string("data/signals.db"));
         cfg.logging.trades_db  = lg.value("trades_db", std::string("data/trades.db"));
+    }
+
+    // ---- execution (optional; testnet harness) ----
+    if (j.contains("execution")) {
+        const auto& ex = j.at("execution");
+        cfg.execution.rest_base_url    = ex.value("rest_base_url", cfg.execution.rest_base_url);
+        cfg.execution.api_key          = ex.value("api_key", std::string());
+        cfg.execution.api_secret       = ex.value("api_secret", std::string());
+        cfg.execution.order_timeout_ms = ex.value("order_timeout_ms", 500u);
+        cfg.execution.recheck_threshold= ex.value("recheck_threshold", 1.001);
+        cfg.execution.leg3_threshold   = ex.value("leg3_threshold", 1.000);
+        cfg.execution.enabled          = ex.value("enabled", false);
+        cfg.execution.trades_csv       = ex.value("trades_csv", cfg.execution.trades_csv);
     }
 
     // ---- mode ----
@@ -218,6 +234,9 @@ BotConfig BotConfig::load(const std::string& path) {
     override_int("ARB_FEED_DEPTH", cfg.feed.depth_level);
     override_str("ARB_MODE", cfg.mode);
     override_dbl("ARB_TRADE_SIZE_USDT", cfg.risk.trade_size_usdt);
+    override_str("ARB_API_KEY", cfg.execution.api_key);
+    override_str("ARB_API_SECRET", cfg.execution.api_secret);
+    override_str("ARB_REST_URL", cfg.execution.rest_base_url);
 
     return cfg;
 }

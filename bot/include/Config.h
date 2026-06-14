@@ -33,10 +33,16 @@ struct FeesConfig {
 };
 
 struct RiskConfig {
+    // --- Risk Manager gates (see RiskManager) ---
+    double   ghost_threshold_pct = 1.0;     // gross above this is a stale-price ghost
+    double   min_net_pct = 0.02;            // net below this is too close to zero to fire
+    double   min_depth_multiplier = 3.0;    // need this many trade-sizes of liquidity at best price
+    double   trade_size_usdt = 100.0;       // notional per leg; the only position-size knob
+    double   max_daily_loss_usdt = 50.0;    // halt for the day once cumulative loss passes this
+    double   min_profit_threshold = 0.0035; // reserved: minimum profit ratio gate
+
+    // --- legacy / reserved ---
     double   min_profit_ratio = 1.003;
-    double   min_depth_multiplier = 3.0;
-    double   trade_size_usdt = 50.0;
-    double   max_daily_loss_usdt = 25.0;
     uint32_t trade_cooldown_ms = 2000;
 };
 
@@ -46,6 +52,19 @@ struct LoggingConfig {
     std::string trades_db = "data/trades.db";
 };
 
+// Execution harness (Binance testnet REST). When `enabled` is false the bot
+// behaves exactly as the detection-only paper bot — no orders, no threads.
+struct ExecutionConfig {
+    std::string rest_base_url   = "https://testnet.binance.vision";
+    std::string api_key;
+    std::string api_secret;
+    uint32_t    order_timeout_ms = 500;
+    double      recheck_threshold = 1.001;  // abort before leg2 if ratio drops below
+    double      leg3_threshold    = 1.000;  // abort before leg3 if ratio drops below
+    bool        enabled = false;            // off by default; turn on for testnet runs
+    std::string trades_csv = "data/trades.csv";
+};
+
 struct BotConfig {
     std::vector<TriangleDef> triangles; // one or more arbitrage loops
     std::vector<std::pair<std::string, std::string>> currency_modifiers;  // global replacements
@@ -53,6 +72,7 @@ struct BotConfig {
     FeesConfig     fees;
     RiskConfig     risk;
     LoggingConfig  logging;
+    ExecutionConfig execution;
     std::string    mode = "paper";    // "paper" or "live"
 
     // Loads config.json from `path`, applies currency modifiers to every loop,

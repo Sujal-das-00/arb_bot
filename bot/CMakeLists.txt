@@ -22,6 +22,9 @@ add_library(arb_core STATIC
     src/FeedHandler.cpp
     src/MessageParser.cpp
     src/TriangleCalculator.cpp
+    src/RiskManager.cpp
+    src/OrderClient.cpp
+    src/ExecutionEngine.cpp
     src/Dispatch.cpp
     src/Logger.cpp
 )
@@ -52,4 +55,10 @@ if(BUILD_TESTING)
     add_executable(test_dispatch tests/test_dispatch.cpp)
     target_link_libraries(test_dispatch PRIVATE arb_core GTest::gtest_main)
     add_test(NAME test_dispatch COMMAND test_dispatch)
+    add_executable(test_risk_manager tests/test_risk_manager.cpp)
+    target_link_libraries(test_risk_manager PRIVATE arb_core GTest::gtest_main)
+    add_test(NAME test_risk_manager COMMAND test_risk_manager)
+    add_executable(test_order_client tests/test_order_client.cpp)
+    target_link_libraries(test_order_client PRIVATE arb_core GTest::gtest_main)
+    add_test(NAME test_order_client COMMAND test_order_client)
 endif()
