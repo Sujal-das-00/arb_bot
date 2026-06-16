@@ -55,6 +55,7 @@ struct TradeRecord {
     int64_t leg1_sent_ts = 0, leg3_confirmed_ts = 0, total_duration_ms = 0;
     LegRecord legs[3];
     double starting_usdt = 0, ending_usdt = 0;
+    double wallet_usdt = 0;   // simulated running balance AFTER this trade (compounding)
     double predicted_net_pct = 0, actual_net_pct = 0, slippage_pct = 0;
     TradeState final_state = TradeState::IDLE;
     std::string abort_reason;
@@ -95,10 +96,11 @@ private:
     void execution_loop();   // Thread 2 body
     void logger_loop();      // Thread 3 body
 
-    // One full testnet trade. Fills `rec`; returns with final_state set.
-    void run_testnet_trade(const TradeSignal& sig, TradeRecord& rec);
-    // The instant book-price baseline. Never aborts, zero latency.
-    void build_paper_record(const TradeSignal& sig, TradeRecord& rec);
+    // One full testnet trade sized to `notional` USDT. Fills `rec`; returns with
+    // final_state set.
+    void run_testnet_trade(const TradeSignal& sig, TradeRecord& rec, double notional);
+    // The instant book-price baseline, sized to `notional`. Never aborts, zero latency.
+    void build_paper_record(const TradeSignal& sig, TradeRecord& rec, double notional);
 
     // Recompute the live loop ratio (>1.0 = still profitable) for a recheck.
     bool current_ratio(const TradeSignal& sig, double& ratio_out);
@@ -108,8 +110,7 @@ private:
     void error_recovery(const TradeSignal& sig, TradeRecord& rec);
 
     void push_result(const TradeRecord& rec);
-    void write_csv_header_if_needed();
-    void write_csv_row(const TradeRecord& rec);
+    void write_csv_row(const TradeRecord& rec);  // per-day logs/trades_YYYY-MM-DD.csv
     void log_trade_console(const TradeRecord& rec);
     void maybe_log_heartbeat();
     void maybe_log_comparison();
@@ -119,11 +120,21 @@ private:
     RiskManager&             risk_;
     OrderClient&             client_;
 
-    double trade_size_usdt_;
     double fee_frac_;        // taker fee as a fraction, e.g. 0.001
     int    order_timeout_ms_;
     double recheck_threshold_;
     double leg3_threshold_;
+    bool   paper_only_;   // true: simulate only (paper records, no testnet orders)
+
+    // Freely-compounding simulated wallet, owned by the execution thread (Thread 2).
+    // Each trade multiplies wallet_usdt_ by its realized return ratio (ending/start).
+    // In paper mode the order deploys the whole balance; in testnet mode the order
+    // is a FIXED wallet_seed_-sized probe (to respect sandbox limits) and only the
+    // % return feeds the wallet. wallet_seed_ is the starting capital (= trade_size_usdt),
+    // used as the testnet probe size and the return-% baseline. The logger thread
+    // never touches wallet_usdt_; it reads the balance off each TradeRecord.
+    double wallet_usdt_;
+    double wallet_seed_;
 
     // Thread 1 -> Thread 2 (hot path, lock-free).
     boost::lockfree::spsc_queue<TradeSignal, boost::lockfree::capacity<1024>> signal_q_;
@@ -147,8 +158,8 @@ private:
     long long completed_ = 0;
     long long aborted_   = 0;
     long long errored_   = 0;
-    long long testnet_rows_ = 0;
-    bool csv_header_written_ = false;
+    long long primary_rows_ = 0;   // reported rows: testnet rows, or paper rows in paper-only mode
+    double    last_wallet_usdt_ = 0;   // Thread 3: latest balance seen, for the heartbeat
     // Per-triangle paper/testnet net% accumulators for the comparison table.
     struct TriStat { double paper_sum = 0; long paper_n = 0;
                      double testnet_sum = 0; long testnet_n = 0; long aborts = 0; };

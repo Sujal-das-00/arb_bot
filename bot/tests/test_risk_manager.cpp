@@ -13,6 +13,9 @@ static BotConfig make_config() {
     cfg.risk.max_daily_loss_usdt  = 50.0;
     cfg.risk.trade_size_usdt      = 100.0;
     cfg.risk.min_depth_multiplier = 3.0;
+    // Hold the profit-threshold gate effectively open (0.0001 -> 0.01%) so the
+    // other gates can be tested in isolation; BelowThreshold has its own tests.
+    cfg.risk.min_profit_threshold = 0.0001;
     cfg.mode = "paper";
     return cfg;
 }
@@ -123,4 +126,42 @@ TEST(RiskManager, DailyLossTakesPrecedenceOverDepth) {
     auto d = rm.evaluate("ATOM-BTC-USDT", 0.30, 0.10,
                          1.0, 1.0, 1000.0, 50.0);
     EXPECT_EQ(d.result, RiskResult::BLOCKED_DAILY_LOSS);
+}
+
+// A config whose profit-threshold gate is the documented 0.35% (0.0035 ratio).
+static BotConfig make_config_threshold() {
+    BotConfig cfg = make_config();
+    cfg.risk.min_profit_threshold = 0.0035;   // 0.35%
+    return cfg;
+}
+
+// 13. Profit threshold: net 0.15% (< 0.35%) → BLOCKED_BELOW_THRESHOLD
+TEST(RiskManager, BelowThresholdBlocksMarginalNet) {
+    RiskManager rm(make_config_threshold());
+    auto d = eval_default(rm, 0.45, 0.15);
+    EXPECT_EQ(d.result, RiskResult::BLOCKED_BELOW_THRESHOLD);
+}
+
+// 14. Profit threshold: net 0.40% (above the 0.35% floor) → passes the gate
+TEST(RiskManager, BelowThresholdPassesAboveFloor) {
+    RiskManager rm(make_config_threshold());
+    auto d = eval_default(rm, 0.70, 0.40);
+    EXPECT_NE(d.result, RiskResult::BLOCKED_BELOW_THRESHOLD);
+    EXPECT_EQ(d.result, RiskResult::APPROVED);
+}
+
+// 15. Ghost fires before profit threshold (order matters)
+TEST(RiskManager, GhostTakesPrecedenceOverBelowThreshold) {
+    RiskManager rm(make_config_threshold());
+    // gross 2.3% is a ghost AND net 0.15% is below floor; ghost wins.
+    auto d = eval_default(rm, 2.3039, 0.15);
+    EXPECT_EQ(d.result, RiskResult::BLOCKED_GHOST);
+}
+
+// 16. Profit threshold fires before min-net (order matters)
+TEST(RiskManager, BelowThresholdTakesPrecedenceOverMinNet) {
+    RiskManager rm(make_config_threshold());
+    // net 0.01% trips both the 0.35% floor and the 0.02% min-net; floor wins.
+    auto d = eval_default(rm, 0.30, 0.01);
+    EXPECT_EQ(d.result, RiskResult::BLOCKED_BELOW_THRESHOLD);
 }

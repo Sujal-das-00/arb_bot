@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstddef>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -39,6 +41,43 @@
 static int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// Append one row to the per-day signals table: logs/signals_YYYY-MM-DD.csv.
+// Records every FIRE candidate the risk gate saw, with its decision and reason
+// (e.g. "below_threshold"), so rejections are auditable next to the trades CSV.
+// Called only on the io_context strand (Thread 1) — single-threaded, no lock.
+static void log_signal_row(const std::string& log_dir,
+                           int64_t ts_ms,
+                           const std::string& triangle_id,
+                           const std::string& dir,
+                           double gross_pct,
+                           double net_pct,
+                           const std::string& decision,
+                           const std::string& reason) {
+    namespace fs = std::filesystem;
+    const std::time_t secs = static_cast<std::time_t>(ts_ms / 1000);
+    const int ms = static_cast<int>(ts_ms % 1000);
+    std::tm tm{};
+    localtime_r(&secs, &tm);
+    char date_buf[16], time_buf[16];
+    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm);
+    std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
+
+    fs::create_directories(log_dir);
+    const fs::path p = fs::path(log_dir) / ("signals_" + std::string(date_buf) + ".csv");
+    const bool need_header = !fs::exists(p) || fs::file_size(p) == 0;
+
+    std::ofstream f(p, std::ios::app);
+    if (!f) return;
+    if (need_header) {
+        f << "date,time,triangle_id,direction,gross_pct,net_pct,decision,reason\n";
+    }
+    f << date_buf << ',' << time_buf << '.'
+      << std::setfill('0') << std::setw(3) << ms << std::setfill(' ') << ','
+      << triangle_id << ',' << dir << ','
+      << std::fixed << std::setprecision(4) << gross_pct << ',' << net_pct << ','
+      << decision << ',' << reason << '\n';
 }
 
 int main(int argc, char* argv[]) {
@@ -130,18 +169,27 @@ int main(int argc, char* argv[]) {
 
         // --- Risk gate: runs before every potential FIRE ---
         RiskManager risk_manager(config);
-        const double trade_size_usdt = config.risk.trade_size_usdt;
         int prev_hour = -1;  // for midnight (UTC) daily-reset detection
 
-        // --- Execution harness (testnet dual accounting), only if enabled ---
+        // --- Execution harness ---
+        // The engine runs in two modes:
+        //   testnet (execution.enabled=true): real testnet orders + dual accounting.
+        //   paper   (mode="paper"):           pure simulation, no orders, no money —
+        //                                     still produces trades.csv and books the
+        //                                     simulated P&L so heartbeats are honest.
         const bool exec_enabled = config.execution.enabled;
+        const bool run_engine   = exec_enabled || config.mode == "paper";
         std::unique_ptr<OrderClient>     order_client;
         std::unique_ptr<ExecutionEngine> engine;
-        if (exec_enabled) {
+        if (run_engine) {
             order_client = std::make_unique<OrderClient>(config);
-            logger.log("[main] execution ENABLED — loading exchange info from " +
-                       config.execution.rest_base_url);
-            order_client->load_exchange_info();
+            if (exec_enabled) {
+                logger.log("[main] execution ENABLED — loading exchange info from " +
+                           config.execution.rest_base_url);
+                order_client->load_exchange_info();   // testnet only; paper needs no network
+            } else {
+                logger.log("[main] execution SIMULATED (paper) — no orders will be sent");
+            }
             engine = std::make_unique<ExecutionEngine>(config, triangles, risk_manager, *order_client);
             engine->start();
         }
@@ -161,11 +209,15 @@ int main(int argc, char* argv[]) {
         long long lag_samples  = 0;
 
         // --- Cost model + thresholds (shared by every triangle) ---
-        constexpr double FEES_PCT       = 0.225;   // 3 × 0.075% taker (BNB discount)
-        constexpr double SLIPPAGE_PCT   = 0.05;    // estimated execution drift
-        constexpr double TOTAL_COST_PCT = FEES_PCT + SLIPPAGE_PCT;
+        // Keep this in lockstep with ExecutionEngine's fee model so predicted_net_pct
+        // and actual_net_pct are directly comparable and slippage_pct isolates real
+        // execution drift. Three taker legs at the CONFIGURED rate — the old hardcoded
+        // 0.225% (0.075%/leg w/ BNB discount) under-counted the real 0.1%/leg = 0.3%,
+        // which is why every FIRE looked profitable while the CSV showed losses.
+        const double FEES_PCT       = 3.0 * config.fees.taker_fee_pct;   // e.g. 0.3
+        const double TOTAL_COST_PCT = FEES_PCT;   // frictionless-fill expectation
         constexpr double WATCH_THRESHOLD_PCT = 0.05;
-        constexpr double FIRE_THRESHOLD_PCT  = 0.00;
+        constexpr double FIRE_THRESHOLD_PCT  = 0.00;  // all positive candidates go to the risk gate
         constexpr long long HEARTBEAT_EVERY  = 5000;
 
         feed.on_message([&](const std::string& raw) {
@@ -232,6 +284,11 @@ int main(int argc, char* argv[]) {
                         first_leg.best_bid, first_leg.best_ask,
                         first_leg.best_bid_qty, first_leg.best_ask_qty);
 
+                    log_signal_row(config.logging.log_dir, now_ms(), td.name, dir,
+                                   best_gross, net_pct,
+                                   rd.result == RiskResult::APPROVED ? "approved" : "blocked",
+                                   risk_reason_tag(rd.result));
+
                     if (rd.result == RiskResult::APPROVED) {
                         ++fire_count;
                         std::ostringstream m;
@@ -243,10 +300,12 @@ int main(int argc, char* argv[]) {
                           << "  feed_lag " << feed_lag_ms << "ms";
                         logger.log(m.str());
 
-                        if (exec_enabled) {
+                        if (run_engine) {
                             // Capture signal_ts THE INSTANT FIRE fires (Rule 1),
-                            // snapshot the book, and hand off to Thread 2. The
-                            // engine owns dual accounting + P&L from here.
+                            // snapshot the book, and hand off to Thread 2. The engine
+                            // owns accounting + P&L from here — in paper mode it
+                            // simulates the fill and books the SIMULATED result, not a
+                            // forecast, so the heartbeat stays honest.
                             TradeSignal sig;
                             sig.tri_index = idx;
                             sig.dir = (std::string(dir) == "FWD") ? TriDir::FWD : TriDir::REV;
@@ -258,12 +317,6 @@ int main(int argc, char* argv[]) {
                             if (!engine->submit(sig)) {
                                 logger.warn("[main] signal queue full — dropped " + td.name);
                             }
-                        } else if (config.mode == "paper") {
-                            // Detection-only paper bot: book the PREDICTED P&L so
-                            // the daily-loss breaker and heartbeat still track.
-                            const double predicted_pnl_usdt =
-                                net_pct * trade_size_usdt / 100.0;
-                            risk_manager.record_trade_result(predicted_pnl_usdt);
                         }
                     } else {
                         std::ostringstream m;

@@ -28,8 +28,14 @@ private:
     Logger() = default;
     ~Logger();
 
+    // Opens (appending) the log file for the given date, e.g.
+    // "<log_dir>/bot_2026-06-16.log". Caller must hold mutex_.
+    void open_for_date(const std::string& date);
+
     std::ofstream file_;
     std::mutex mutex_;
+    std::string log_dir_;     // where log files live, set in init()
+    std::string current_date_; // "%Y-%m-%d" of the currently open file
 
     template <typename T>
     void format_impl(std::ostringstream& oss, const std::string& format, T value) {

@@ -34,17 +34,21 @@ std::string usd(double v) {
 
 const char* risk_reason_tag(RiskResult result) {
     switch (result) {
-        case RiskResult::APPROVED:           return "approved";
-        case RiskResult::BLOCKED_GHOST:      return "ghost_filter";
-        case RiskResult::BLOCKED_MIN_NET:    return "min_net_threshold";
-        case RiskResult::BLOCKED_DAILY_LOSS: return "daily_loss_limit";
-        case RiskResult::BLOCKED_DEPTH:      return "insufficient_depth";
+        case RiskResult::APPROVED:                return "approved";
+        case RiskResult::BLOCKED_GHOST:           return "ghost_filter";
+        case RiskResult::BLOCKED_BELOW_THRESHOLD: return "below_threshold";
+        case RiskResult::BLOCKED_MIN_NET:         return "min_net_threshold";
+        case RiskResult::BLOCKED_DAILY_LOSS:      return "daily_loss_limit";
+        case RiskResult::BLOCKED_DEPTH:           return "insufficient_depth";
     }
     return "unknown";
 }
 
 RiskManager::RiskManager(const BotConfig& config)
     : ghost_threshold_pct(config.risk.ghost_threshold_pct),
+      // min_profit_threshold is a ratio (0.0035); the gate compares against net%
+      // so scale to percent once here (0.0035 -> 0.35).
+      min_profit_pct(config.risk.min_profit_threshold * 100.0),
       min_net_pct(config.risk.min_net_pct),
       max_daily_loss_usdt(config.risk.max_daily_loss_usdt),
       trade_size_usdt(config.risk.trade_size_usdt),
@@ -59,6 +63,12 @@ RiskDecision RiskManager::evaluate(
     double /*best_bid_qty*/,
     double best_ask_qty) {
 
+    // Guard the running counters (blocked_today) and the daily-loss read; the
+    // execution thread mutates daily_pnl_usdt/trades_today concurrently. This is
+    // a FIRE-candidate-only path, not the per-message hot path, so the cost is
+    // negligible and uncontended in practice.
+    std::lock_guard<std::mutex> lk(stats_mtx_);
+
     // --- Check 1: ghost filter ------------------------------------------------
     // No real triangular arb on liquid pairs exceeds ~1% gross; anything above
     // is a stale order-book entry. Caught the INJ ghost at 2.3039% in 24h data.
@@ -70,7 +80,19 @@ RiskDecision RiskManager::evaluate(
         return {RiskResult::BLOCKED_GHOST, r.str()};
     }
 
-    // --- Check 2: minimum net threshold --------------------------------------
+    // --- Check 2: minimum profit threshold -----------------------------------
+    // The hard floor. Real break-even is 3 taker legs of fees; this gate demands
+    // a predicted net comfortably above that (min_profit_threshold, e.g. 0.35%)
+    // so a marginal edge that won't clear costs never reaches the queue.
+    if (net_pct < min_profit_pct) {
+        ++blocked_today;
+        std::ostringstream r;
+        r << "net " << pct(net_pct, 4) << "% below profit threshold "
+          << pct(min_profit_pct, 2) << "% — does not clear fees + cushion";
+        return {RiskResult::BLOCKED_BELOW_THRESHOLD, r.str()};
+    }
+
+    // --- Check 3: minimum net threshold --------------------------------------
     // Net below the floor is too close to zero; 0.01–0.02% of real slippage
     // would flip it into a loss.
     if (net_pct < min_net_pct) {
@@ -81,7 +103,7 @@ RiskDecision RiskManager::evaluate(
         return {RiskResult::BLOCKED_MIN_NET, r.str()};
     }
 
-    // --- Check 3: daily loss limit -------------------------------------------
+    // --- Check 4: daily loss limit -------------------------------------------
     // If the bot is bleeding money something is wrong — stop rather than
     // compound losses. Reset at midnight.
     if (daily_pnl_usdt < -max_daily_loss_usdt) {
@@ -92,7 +114,7 @@ RiskDecision RiskManager::evaluate(
         return {RiskResult::BLOCKED_DAILY_LOSS, r.str()};
     }
 
-    // --- Check 4: order book depth -------------------------------------------
+    // --- Check 5: order book depth -------------------------------------------
     // The first leg buys the outer asset with USDT, so liquidity sits on the
     // ask. If only a sliver is resting at the best price the order walks the
     // book and fills worse than calculated; the multiplier buffers movement.
@@ -111,11 +133,13 @@ RiskDecision RiskManager::evaluate(
 }
 
 void RiskManager::record_trade_result(double actual_pnl_usdt) {
+    std::lock_guard<std::mutex> lk(stats_mtx_);
     daily_pnl_usdt += actual_pnl_usdt;
     ++trades_today;
 }
 
 void RiskManager::reset_daily_loss() {
+    std::lock_guard<std::mutex> lk(stats_mtx_);
     daily_pnl_usdt = 0.0;
     trades_today   = 0;
     blocked_today  = 0;

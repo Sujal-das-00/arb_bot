@@ -96,7 +96,7 @@
     "order_timeout_ms": 500,
     "recheck_threshold": 1.001,
     "leg3_threshold": 1.000,
-    "enabled": false,
+    "enabled": true,
     "trades_csv": "data/trades.csv"
   },
   "mode": "paper"
