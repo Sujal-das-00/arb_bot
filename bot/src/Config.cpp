@@ -198,6 +198,7 @@ BotConfig BotConfig::load(const std::string& path) {
         cfg.risk.trade_size_usdt      = risk.value("trade_size_usdt", 100.0);
         cfg.risk.max_daily_loss_usdt  = risk.value("max_daily_loss_usdt", 50.0);
         cfg.risk.min_profit_threshold = risk.value("min_profit_threshold", 0.0035);
+        cfg.risk.cooldown_ms          = risk.value("cooldown_ms", static_cast<int64_t>(2000));
         cfg.risk.min_profit_ratio     = risk.value("min_profit_ratio", 1.003);
         cfg.risk.trade_cooldown_ms    = risk.value("trade_cooldown_ms", 2000u);
     }

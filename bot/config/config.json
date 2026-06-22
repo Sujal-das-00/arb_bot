@@ -82,7 +82,9 @@
     "max_daily_loss_usdt": 100.0,
     "trade_size_usdt": 1000.0,
     "min_depth_multiplier": 3.0,
-    "min_profit_threshold": 0.0015
+    "min_profit_threshold": 0.0000,
+    "cooldown_ms": 2000,
+    "cooldown_ms_comment": "2000ms is sized for Binance testnet's thin, slow-refreshing books. Revisit once running against real production liquidity on the KL VPS — real books refresh in single-digit ms, so this is likely far more conservative than needed."
   },
   "logging": {
     "log_dir": "logs",

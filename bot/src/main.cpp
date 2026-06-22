@@ -279,10 +279,16 @@ int main(int argc, char* argv[]) {
                     // First leg buys the outer asset with USDT — pass its top of
                     // book to the risk gate for the depth check.
                     const BookUpdate& first_leg = it2->second;  // outer_usdt
+                    // Same triangle+direction key ExecutionEngine uses for its own
+                    // tri_stats_ map (see ExecutionEngine.cpp), so cooldown tracking
+                    // lines up with everything else keyed by triangle_id.
+                    const std::string triangle_id = td.name + " " + dir;
+                    const int64_t fire_check_ts = now_ms();
                     const RiskDecision rd = risk_manager.evaluate(
-                        td.name, best_gross, net_pct,
+                        triangle_id, best_gross, net_pct,
                         first_leg.best_bid, first_leg.best_ask,
-                        first_leg.best_bid_qty, first_leg.best_ask_qty);
+                        first_leg.best_bid_qty, first_leg.best_ask_qty,
+                        fire_check_ts);
 
                     log_signal_row(config.logging.log_dir, now_ms(), td.name, dir,
                                    best_gross, net_pct,
@@ -314,7 +320,13 @@ int main(int argc, char* argv[]) {
                             sig.btc_usdt_bid   = it1->second.best_bid; sig.btc_usdt_ask   = it1->second.best_ask;
                             sig.outer_usdt_bid = it2->second.best_bid; sig.outer_usdt_ask = it2->second.best_ask;
                             sig.outer_btc_bid  = it3->second.best_bid; sig.outer_btc_ask  = it3->second.best_ask;
-                            if (!engine->submit(sig)) {
+                            if (engine->submit(sig)) {
+                                // Record the fire synchronously, right here on Thread 1,
+                                // so a burst of signals for this triangle arriving before
+                                // Thread 2 drains the queue is still blocked by cooldown
+                                // at decision time — not after the fact.
+                                risk_manager.record_fire(triangle_id, fire_check_ts);
+                            } else {
                                 logger.warn("[main] signal queue full — dropped " + td.name);
                             }
                         }

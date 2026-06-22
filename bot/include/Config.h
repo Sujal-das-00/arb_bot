@@ -40,6 +40,7 @@ struct RiskConfig {
     double   trade_size_usdt = 100.0;       // notional per leg; the only position-size knob
     double   max_daily_loss_usdt = 50.0;    // halt for the day once cumulative loss passes this
     double   min_profit_threshold = 0.0035; // reserved: minimum profit ratio gate
+    int64_t  cooldown_ms = 2000;            // min gap between fires on the same triangle+direction
 
     // --- legacy / reserved ---
     double   min_profit_ratio = 1.003;

@@ -35,6 +35,7 @@ std::string usd(double v) {
 const char* risk_reason_tag(RiskResult result) {
     switch (result) {
         case RiskResult::APPROVED:                return "approved";
+        case RiskResult::BLOCKED_COOLDOWN:        return "cooldown_active";
         case RiskResult::BLOCKED_GHOST:           return "ghost_filter";
         case RiskResult::BLOCKED_BELOW_THRESHOLD: return "below_threshold";
         case RiskResult::BLOCKED_MIN_NET:         return "min_net_threshold";
@@ -52,22 +53,37 @@ RiskManager::RiskManager(const BotConfig& config)
       min_net_pct(config.risk.min_net_pct),
       max_daily_loss_usdt(config.risk.max_daily_loss_usdt),
       trade_size_usdt(config.risk.trade_size_usdt),
-      min_depth_multiplier(config.risk.min_depth_multiplier) {}
+      min_depth_multiplier(config.risk.min_depth_multiplier),
+      cooldown_ms(config.risk.cooldown_ms) {}
 
 RiskDecision RiskManager::evaluate(
-    const std::string& /*triangle_id*/,
+    const std::string& triangle_id,
     double gross_pct,
     double net_pct,
     double /*best_bid*/,
     double best_ask,
     double /*best_bid_qty*/,
-    double best_ask_qty) {
+    double best_ask_qty,
+    int64_t now_ms) {
 
     // Guard the running counters (blocked_today) and the daily-loss read; the
     // execution thread mutates daily_pnl_usdt/trades_today concurrently. This is
     // a FIRE-candidate-only path, not the per-message hot path, so the cost is
     // negligible and uncontended in practice.
     std::lock_guard<std::mutex> lk(stats_mtx_);
+
+    // --- Check 0: cooldown ----------------------------------------------------
+    // Cheapest check, runs first. Re-firing the same triangle within
+    // cooldown_ms sweeps the same resting liquidity before the book has had a
+    // chance to refresh, producing fills that are not independent samples.
+    auto it = last_fired_ms_.find(triangle_id);
+    if (it != last_fired_ms_.end() && (now_ms - it->second) < cooldown_ms) {
+        ++blocked_today;
+        std::ostringstream r;
+        r << "fired " << (now_ms - it->second) << "ms ago, cooldown "
+          << cooldown_ms << "ms — same liquidity pocket";
+        return {RiskResult::BLOCKED_COOLDOWN, r.str()};
+    }
 
     // --- Check 1: ghost filter ------------------------------------------------
     // No real triangular arb on liquid pairs exceeds ~1% gross; anything above
@@ -130,6 +146,11 @@ RiskDecision RiskManager::evaluate(
     }
 
     return {RiskResult::APPROVED, "approved"};
+}
+
+void RiskManager::record_fire(const std::string& triangle_id, int64_t now_ms) {
+    std::lock_guard<std::mutex> lk(stats_mtx_);
+    last_fired_ms_[triangle_id] = now_ms;
 }
 
 void RiskManager::record_trade_result(double actual_pnl_usdt) {

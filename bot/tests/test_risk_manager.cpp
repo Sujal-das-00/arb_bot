@@ -5,6 +5,7 @@
 
 // A BotConfig carrying the documented default risk gates:
 //   ghost 1.0%   min_net 0.02%   max_daily_loss $50   trade_size $100   depth 3x
+//   cooldown 2000ms
 // required depth = trade_size * multiplier = 100 * 3 = $300.
 static BotConfig make_config() {
     BotConfig cfg;
@@ -13,6 +14,7 @@ static BotConfig make_config() {
     cfg.risk.max_daily_loss_usdt  = 50.0;
     cfg.risk.trade_size_usdt      = 100.0;
     cfg.risk.min_depth_multiplier = 3.0;
+    cfg.risk.cooldown_ms          = 2000;
     // Hold the profit-threshold gate effectively open (0.0001 -> 0.01%) so the
     // other gates can be tested in isolation; BelowThreshold has its own tests.
     cfg.risk.min_profit_threshold = 0.0001;
@@ -20,12 +22,17 @@ static BotConfig make_config() {
     return cfg;
 }
 
+// Arbitrary baseline timestamp (ms) for tests that don't care about cooldown.
+constexpr int64_t kBaseTs = 1'000'000;
+
 // Deep order book (≫ $300) so the depth check never trips unless a test wants
 // it to: best_ask 1.0 * qty 1000 = $1000 available.
-static RiskDecision eval_default(RiskManager& rm, double gross, double net) {
+static RiskDecision eval_default(RiskManager& rm, double gross, double net,
+                                  int64_t now_ms = kBaseTs) {
     return rm.evaluate("ATOM-BTC-USDT", gross, net,
                        /*bid*/ 1.0, /*ask*/ 1.0,
-                       /*bid_qty*/ 1000.0, /*ask_qty*/ 1000.0);
+                       /*bid_qty*/ 1000.0, /*ask_qty*/ 1000.0,
+                       now_ms);
 }
 
 // 1. Ghost filter: gross 2.3039% → BLOCKED_GHOST
@@ -90,7 +97,7 @@ TEST(RiskManager, DepthBlocksThinBook) {
     RiskManager rm(make_config());
     // ask 1.0 * qty 299 = $299 available < $300 required.
     auto d = rm.evaluate("ATOM-BTC-USDT", 0.30, 0.10,
-                         1.0, 1.0, 1000.0, 299.0);
+                         1.0, 1.0, 1000.0, 299.0, kBaseTs);
     EXPECT_EQ(d.result, RiskResult::BLOCKED_DEPTH);
 }
 
@@ -98,7 +105,7 @@ TEST(RiskManager, DepthBlocksThinBook) {
 TEST(RiskManager, DepthPassesDeepBook) {
     RiskManager rm(make_config());
     auto d = rm.evaluate("ATOM-BTC-USDT", 0.30, 0.10,
-                         1.0, 1.0, 1000.0, 301.0);
+                         1.0, 1.0, 1000.0, 301.0, kBaseTs);
     EXPECT_NE(d.result, RiskResult::BLOCKED_DEPTH);
     EXPECT_EQ(d.result, RiskResult::APPROVED);
 }
@@ -124,7 +131,7 @@ TEST(RiskManager, DailyLossTakesPrecedenceOverDepth) {
     rm.record_trade_result(-51.0);
     // Thin book ($50) would trip depth, but daily-loss is checked first.
     auto d = rm.evaluate("ATOM-BTC-USDT", 0.30, 0.10,
-                         1.0, 1.0, 1000.0, 50.0);
+                         1.0, 1.0, 1000.0, 50.0, kBaseTs);
     EXPECT_EQ(d.result, RiskResult::BLOCKED_DAILY_LOSS);
 }
 
@@ -164,4 +171,39 @@ TEST(RiskManager, BelowThresholdTakesPrecedenceOverMinNet) {
     // net 0.01% trips both the 0.35% floor and the 0.02% min-net; floor wins.
     auto d = eval_default(rm, 0.30, 0.01);
     EXPECT_EQ(d.result, RiskResult::BLOCKED_BELOW_THRESHOLD);
+}
+
+// 17. Cooldown: re-firing the same triangle within cooldown_ms → BLOCKED_COOLDOWN
+TEST(RiskManager, CooldownBlocksSameTriangleWithinWindow) {
+    RiskManager rm(make_config());  // cooldown_ms = 2000
+    rm.record_fire("ATOM-BTC-USDT", kBaseTs);
+    auto d = eval_default(rm, 0.4249, 0.1499, kBaseTs + 500);  // 500ms later
+    EXPECT_EQ(d.result, RiskResult::BLOCKED_COOLDOWN);
+}
+
+// 18. Cooldown: a different triangle within the same window is unaffected
+TEST(RiskManager, CooldownDoesNotAffectOtherTriangles) {
+    RiskManager rm(make_config());
+    rm.record_fire("ATOM-BTC-USDT", kBaseTs);
+    auto d = rm.evaluate("NEAR-BTC-USDT REV", 0.4249, 0.1499,
+                         1.0, 1.0, 1000.0, 1000.0, kBaseTs + 500);
+    EXPECT_EQ(d.result, RiskResult::APPROVED);
+}
+
+// 19. Cooldown: same triangle after cooldown_ms has elapsed → approved again
+TEST(RiskManager, CooldownClearsAfterWindowElapses) {
+    RiskManager rm(make_config());  // cooldown_ms = 2000
+    rm.record_fire("ATOM-BTC-USDT", kBaseTs);
+    auto d = eval_default(rm, 0.4249, 0.1499, kBaseTs + 2000);  // exactly at the edge
+    EXPECT_NE(d.result, RiskResult::BLOCKED_COOLDOWN);
+    EXPECT_EQ(d.result, RiskResult::APPROVED);
+}
+
+// 20. Cooldown fires before the ghost filter (order matters — cheapest check first)
+TEST(RiskManager, CooldownTakesPrecedenceOverGhost) {
+    RiskManager rm(make_config());
+    rm.record_fire("ATOM-BTC-USDT", kBaseTs);
+    // gross 2.3% would trip the ghost filter, but cooldown is checked first.
+    auto d = eval_default(rm, 2.3039, 0.1499, kBaseTs + 500);
+    EXPECT_EQ(d.result, RiskResult::BLOCKED_COOLDOWN);
 }
